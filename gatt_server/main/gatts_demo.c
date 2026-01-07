@@ -70,6 +70,13 @@ static uint16_t descr_value = 0x0;
  */
 static uint16_t local_mtu = 23;
 
+// Task for sending periodic dummy data
+static TaskHandle_t data_send_task_handle = NULL;
+static bool is_connected = false;
+static esp_gatt_if_t gatts_if_connected = ESP_GATT_IF_NONE;
+static uint16_t conn_id_connected = 0;
+static uint16_t char_handle_connected = 0;
+
 static uint8_t char_value_read[CONFIG_EXAMPLE_CHAR_READ_DATA_LEN] = {0xDE,0xED,0xBE,0xEF};
 
 
@@ -200,6 +207,38 @@ static prepare_type_env_t b_prepare_write_env;
 
 void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param);
 void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param);
+
+// Task to periodically send dummy data
+static void data_send_task(void *pvParameters)
+{
+    uint32_t counter = 0;
+    while (1) {
+        if (is_connected && gatts_if_connected != ESP_GATT_IF_NONE && char_handle_connected != 0) {
+            // Create dummy data packet
+            uint8_t dummy_data[20];
+            dummy_data[0] = 0xAA; // Header
+            dummy_data[1] = 0xBB;
+            dummy_data[2] = (counter >> 24) & 0xFF; // Counter (big endian)
+            dummy_data[3] = (counter >> 16) & 0xFF;
+            dummy_data[4] = (counter >> 8) & 0xFF;
+            dummy_data[5] = counter & 0xFF;
+            
+            // Fill rest with dummy sensor-like data
+            for (int i = 6; i < 20; i++) {
+                dummy_data[i] = (uint8_t)(counter + i);
+            }
+            
+            // Send notification
+            esp_ble_gatts_send_indicate(gatts_if_connected, conn_id_connected, 
+                                       char_handle_connected, sizeof(dummy_data), 
+                                       dummy_data, false);
+            
+            ESP_LOGI(GATTS_TAG, "Sent dummy data packet #%lu", counter);
+            counter++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Send every 1 second
+    }
+}
 
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
@@ -538,6 +577,18 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         ESP_LOGI(GATTS_TAG, "Connected, conn_id %u, remote "ESP_BD_ADDR_STR"",
                  param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));
         gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
+        
+        // Store connection info for data sending task
+        is_connected = true;
+        gatts_if_connected = gatts_if;
+        conn_id_connected = param->connect.conn_id;
+        char_handle_connected = gl_profile_tab[PROFILE_A_APP_ID].char_handle;
+        
+        // Create task to send periodic dummy data if not already created
+        if (data_send_task_handle == NULL) {
+            xTaskCreate(data_send_task, "data_send_task", 4096, NULL, 5, &data_send_task_handle);
+        }
+        
         //start sent the update connection parameters to the peer device.
         esp_ble_gap_update_conn_params(&conn_params);
         break;
@@ -545,6 +596,10 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
     case ESP_GATTS_DISCONNECT_EVT:
         ESP_LOGI(GATTS_TAG, "Disconnected, remote "ESP_BD_ADDR_STR", reason 0x%02x",
                  ESP_BD_ADDR_HEX(param->disconnect.remote_bda), param->disconnect.reason);
+        is_connected = false;
+        gatts_if_connected = ESP_GATT_IF_NONE;
+        conn_id_connected = 0;
+        char_handle_connected = 0;
         esp_ble_gap_start_advertising(&adv_params);
         local_mtu = 23; // Reset MTU for a single connection
         break;
