@@ -1,2 +1,10 @@
-idf_component_register(SRCS "gatts_demo.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(SRCS "driver_max30102_interface_esp32.c" 
+                             "main.c"
+                             "gatts.c"
+                             "../max30102-main/src/driver_max30102.c"
+                             "../max30102-main/example/driver_max30102_fifo.c"
+                    INCLUDE_DIRS "." 
+                                "../max30102-main/src"
+                                "../max30102-main/interface"
+                                "../max30102-main/example"
+                                )
